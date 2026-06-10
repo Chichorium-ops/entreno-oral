@@ -80,6 +80,7 @@ body.in-session{background:#000}
 #sess-state.listening{color:var(--ok)}
 #sess-state.feedback-ok{color:var(--ok)}
 #sess-state.feedback-bad{color:var(--bad)}
+#sess-heard{text-align:center;color:#5a6478;font-size:13px;min-height:18px;padding:0 10px;font-style:italic}
 #sess-q{
   color:#cfc9b8;font-size:16px;text-align:center;padding:4px 10px 10px;
   max-height:26vh;overflow:auto;
@@ -166,6 +167,7 @@ canvas{width:100%;background:var(--navy2);border:1px solid var(--navy3);border-r
     <span id="sess-score"></span>
   </div>
   <div id="sess-state">preparando</div>
+  <div id="sess-heard"></div>
   <div id="sess-q"></div>
   <div class="answers">
     <button data-n="0">1</button>
@@ -476,34 +478,55 @@ function leerPregunta(){
   hablar(textoPregunta(S.cola[S.idx]), empezarEscucha);
 }
 
+function oido(txt){ $('sess-heard').textContent = txt; }
+
 function empezarEscucha(){
   if(S.pausada || S.fase === 'feedback') return;
   S.fase = 'escuchando';
   S.tEscucha = performance.now();
+  S.micBloqueado = false;
   setEstado('🎤 escuchando…', 'listening');
-  S.timer = setTimeout(() => { pararEscucha(); sinRespuesta(); }, cfg.pausa * 1000);
-  lanzarRec();
+  oido('');
+  // +1.5s de gracia: el micro en Android tarda en arrancar
+  S.timer = setTimeout(() => { pararEscucha(); sinRespuesta(); }, cfg.pausa * 1000 + 1500);
+  // pequeña espera tras la síntesis para no capturar la cola del TTS
+  setTimeout(lanzarRec, 250);
 }
 
 function lanzarRec(){
-  if(!SR || S.fase !== 'escuchando') return;
+  if(!SR || S.fase !== 'escuchando' || S.micBloqueado) return;
   try{
     const rec = new SR();
     S.rec = rec;
     rec.lang = 'es-ES';
-    rec.continuous = false;
-    rec.interimResults = false;
-    rec.maxAlternatives = 3;
+    rec.continuous = true;
+    rec.interimResults = true;     // en Android el resultado final puede no llegar a tiempo
+    rec.maxAlternatives = 5;
     rec.onresult = ev => {
       let texto = '';
-      for(let i=0;i<ev.results[0].length;i++) texto += ' ' + ev.results[0][i].transcript;
-      procesarVoz(norm(texto));
+      for(let i = 0; i < ev.results.length; i++)
+        for(let j = 0; j < ev.results[i].length; j++)
+          texto += ' ' + ev.results[i][j].transcript;
+      const esFinal = ev.results[ev.results.length - 1].isFinal;
+      oido('«' + texto.trim() + '»');
+      procesarVoz(norm(texto), esFinal);
     };
     rec.onend = () => {
       // si sigue la ventana de escucha y no hubo respuesta, relanzar
-      if(S.fase === 'escuchando' && S.rec === rec) lanzarRec();
+      if(S.fase === 'escuchando' && S.rec === rec) setTimeout(() => {
+        if(S.fase === 'escuchando' && S.rec === rec) lanzarRec();
+      }, 200);
     };
-    rec.onerror = () => {};
+    rec.onerror = ev => {
+      if(ev.error === 'not-allowed' || ev.error === 'service-not-allowed'){
+        S.micBloqueado = true;
+        oido('micrófono bloqueado: usa los botones');
+      } else if(ev.error === 'network'){
+        oido('sin conexión para reconocer voz: usa los botones');
+      } else if(ev.error !== 'no-speech' && ev.error !== 'aborted'){
+        oido('error micro: ' + ev.error);
+      }
+    };
     rec.start();
   }catch(e){ S.rec = null; }
 }
@@ -513,9 +536,9 @@ function pararEscucha(){
   if(S.rec){ try{ S.rec.onend = null; S.rec.abort(); }catch(e){} S.rec = null; }
 }
 
-function procesarVoz(t){
+function procesarVoz(t, esFinal){
   if(S.fase !== 'escuchando') return;
-  if(!t) return fallarIntento();
+  if(!t){ if(esFinal) fallarIntento(); return; }
   if(t.includes('repite') || t.includes('repetir')){ pararEscucha(); leerPregunta(); return; }
   if(t.includes('salta') || t.includes('saltar') || t.includes('siguiente')){
     pararEscucha(); registrar(null, 'sin_respuesta', true); return;
@@ -526,7 +549,7 @@ function procesarVoz(t){
     if(NUM_WORDS[i].some(w => t.includes(w))){ elegido = i; break; }
   }
   if(elegido >= 0){ pararEscucha(); responder(elegido); }
-  else fallarIntento();
+  else if(esFinal) fallarIntento();   // los resultados intermedios no cuentan como intento
 }
 
 function fallarIntento(){
