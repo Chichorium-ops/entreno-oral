@@ -1,7 +1,8 @@
-# Convierte tests HTML (formatos "const PREGUNTAS" y "const questions")
+# Convierte tests HTML (formatos PLATAFORMA, questions, Z.AI, TIPO, ESTUDIO, FALTAS)
 # al JSON que consume entreno-oral. Uso:
-#   python convertir_html_a_json.py "ruta1.html" "ruta2.html" ...
-# Salida: ./bancos/<nombre>.json (una entrada por archivo, dedupe interno)
+#   python convertir_html_a_json.py                     -> convierte todo lo de ./PARA CONVERTIR
+#   python convertir_html_a_json.py "carpeta o archivo" -> convierte lo indicado
+# Salida: ./bancos/<nombre>.json + index.json actualizado (dedupe interno por enunciado)
 
 import io, json, os, re, subprocess, sys, tempfile, html as htmlmod
 
@@ -101,7 +102,9 @@ def convertir_archivo(ruta):
     if not crudos:
         return None, 'sin array de preguntas reconocible'
     nombre = os.path.splitext(os.path.basename(ruta))[0]
-    nombre = re.sub(r'\s*\(.*?\)\s*', ' ', nombre).strip()
+    nombre = re.sub(r'\s*\(.*?\)\s*', ' ', nombre)
+    nombre = re.sub(r'[_]+', ' ', nombre)
+    nombre = re.sub(r'\s{2,}', ' ', nombre).strip()
     preguntas, vistas = [], set()
     for crudo in crudos:
         for q in parsear(crudo):
@@ -117,19 +120,43 @@ def convertir_archivo(ruta):
                 preguntas.append(p)
     return (nombre, preguntas), None
 
+CARPETA_ENTRADA = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'PARA CONVERTIR')
+
+def expandir_rutas(args):
+    rutas = []
+    for a in (args or [CARPETA_ENTRADA]):
+        if os.path.isdir(a):
+            rutas += [os.path.join(a, f) for f in sorted(os.listdir(a))
+                      if f.lower().endswith(('.html', '.htm'))]
+        else:
+            rutas.append(a)
+    return rutas
+
 if __name__ == '__main__':
     os.makedirs(SALIDA, exist_ok=True)
-    indice = []
-    for ruta in sys.argv[1:]:
+    os.makedirs(CARPETA_ENTRADA, exist_ok=True)
+    ruta_indice = os.path.join(SALIDA, 'index.json')
+    try:
+        indice = json.load(io.open(ruta_indice, encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        indice = []
+    rutas = expandir_rutas(sys.argv[1:])
+    if not rutas:
+        print(f'No hay archivos HTML en "{CARPETA_ENTRADA}". Pon ahí los tests y vuelve a ejecutar.')
+        sys.exit(0)
+    for ruta in rutas:
         res, err = convertir_archivo(ruta)
         if err:
             print(f'SALTADO {os.path.basename(ruta)}: {err}'); continue
         nombre, preguntas = res
+        if not preguntas:
+            print(f'SALTADO {os.path.basename(ruta)}: 0 preguntas convertibles'); continue
         archivo = re.sub(r'[^\w-]+', '_', nombre.lower()).strip('_') + '.json'
         with io.open(os.path.join(SALIDA, archivo), 'w', encoding='utf-8') as f:
             json.dump(preguntas, f, ensure_ascii=False, indent=1)
+        indice = [e for e in indice if e['archivo'] != archivo]
         indice.append({'nombre': nombre, 'archivo': archivo, 'preguntas': len(preguntas)})
         print(f'OK {archivo}: {len(preguntas)} preguntas')
-    with io.open(os.path.join(SALIDA, 'index.json'), 'w', encoding='utf-8') as f:
+    with io.open(ruta_indice, 'w', encoding='utf-8') as f:
         json.dump(indice, f, ensure_ascii=False, indent=1)
     print(f'\nindex.json con {len(indice)} bancos en {SALIDA}')
