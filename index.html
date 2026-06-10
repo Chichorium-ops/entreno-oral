@@ -63,6 +63,8 @@ label.opt{display:block;margin-bottom:6px}
   padding:7px 14px;font-size:15px;color:var(--dim);cursor:pointer;user-select:none;
 }
 .tema-chip.sel{background:var(--gold);color:var(--navy);border-color:var(--gold);font-weight:700}
+.tema-chip .del{margin-left:8px;opacity:.6;font-weight:400}
+.tema-chip.dl{background:var(--navy3);color:var(--gold);border-style:dashed}
 .msg{font-size:14px;margin-top:8px;min-height:18px}
 .msg.ok{color:var(--ok)} .msg.err{color:var(--bad)}
 .bigstart{font-size:24px;padding:20px;letter-spacing:2px;margin-top:4px}
@@ -136,6 +138,12 @@ canvas{width:100%;background:var(--navy2);border:1px solid var(--navy3);border-r
       <button class="small" id="btn-paste-ok" style="margin-top:8px">Cargar</button>
     </div>
     <div class="msg" id="banco-msg"></div>
+    <div class="temas" id="bancos-list" style="margin-top:10px"></div>
+  </div>
+
+  <div class="card" id="card-online" style="display:none">
+    <h3>Bancos online</h3>
+    <div class="temas" id="online-list"></div>
   </div>
 
   <div class="card" id="card-temas" style="display:none">
@@ -164,6 +172,7 @@ canvas{width:100%;background:var(--navy2);border:1px solid var(--navy3);border-r
 <div class="screen" id="scr-session">
   <div class="sess-top">
     <span id="sess-progress">1 / 10</span>
+    <span id="wl-ind"></span>
     <span id="sess-score"></span>
   </div>
   <div id="sess-state">preparando</div>
@@ -229,7 +238,7 @@ canvas{width:100%;background:var(--navy2);border:1px solid var(--navy3);border-r
 'use strict';
 /* ================= UTILS ================= */
 const $ = id => document.getElementById(id);
-const LS = { banco:'entreno_oral_banco', hist:'entreno_oral_historial', cfg:'entreno_oral_config' };
+const LS = { banco:'entreno_oral_banco', bancos:'entreno_oral_bancos', hist:'entreno_oral_historial', cfg:'entreno_oral_config' };
 const NUM_WORDS = [
   ['1','uno','una','primera','primero'],
   ['2','dos','segunda','segundo'],
@@ -258,7 +267,8 @@ function shuffle(a){
 }
 
 /* ================= ESTADO ================= */
-let banco = [];
+let bancos = lsGet(LS.bancos, {});      // { nombre: preguntas[] }
+let bancosSel = new Set();
 let temasSel = new Set();
 let cfg = Object.assign({num:10, pausa:7, rate:1.0}, lsGet(LS.cfg, {}));
 
@@ -338,8 +348,16 @@ const SR = window.SpeechRecognition || window.webkitSpeechRecognition || null;
 /* ================= WAKE LOCK ================= */
 let wakeLock = null, sesionActiva = false;
 async function pedirWakeLock(){
-  if(!('wakeLock' in navigator)) return;
-  try{ wakeLock = await navigator.wakeLock.request('screen'); }catch(e){ wakeLock = null; }
+  const ind = $('wl-ind');
+  if(!('wakeLock' in navigator)){ ind.textContent = '⚠ pantalla no bloqueada'; return; }
+  try{
+    wakeLock = await navigator.wakeLock.request('screen');
+    ind.textContent = '🔒';
+    wakeLock.addEventListener('release', () => { ind.textContent = ''; });
+  }catch(e){
+    wakeLock = null;
+    ind.textContent = '⚠ pantalla no bloqueada';
+  }
 }
 function soltarWakeLock(){
   if(wakeLock){ wakeLock.release().catch(()=>{}); wakeLock = null; }
@@ -362,20 +380,57 @@ function validarBanco(data){
   }
   return null;
 }
-function cargarBanco(data, origen){
+function cargarBanco(data, nombre){
   const err = validarBanco(data);
   const msg = $('banco-msg');
   if(err){ msg.textContent = err; msg.className = 'msg err'; return false; }
-  banco = data;
-  lsSet(LS.banco, banco);
-  msg.textContent = `${banco.length} preguntas cargadas (${origen}).`;
+  bancos[nombre] = data;
+  lsSet(LS.bancos, bancos);
+  bancosSel.add(nombre);
+  msg.textContent = `"${nombre}": ${data.length} preguntas guardadas.`;
   msg.className = 'msg ok';
-  pintarTemas();
-  $('btn-start').disabled = false;
+  pintarBancos();
   return true;
 }
+
+function preguntasSeleccionadas(){
+  let pool = [];
+  bancosSel.forEach(n => { if(bancos[n]) pool = pool.concat(bancos[n]); });
+  return pool;
+}
+
+function pintarBancos(){
+  const cont = $('bancos-list');
+  cont.innerHTML = '';
+  Object.keys(bancos).forEach(n => {
+    const chip = document.createElement('div');
+    chip.className = 'tema-chip' + (bancosSel.has(n) ? ' sel' : '');
+    chip.textContent = `${n} (${bancos[n].length})`;
+    const del = document.createElement('span');
+    del.className = 'del';
+    del.textContent = '✕';
+    del.onclick = ev => {
+      ev.stopPropagation();
+      if(!confirm(`¿Borrar el banco "${n}" (${bancos[n].length} preguntas)?`)) return;
+      delete bancos[n];
+      bancosSel.delete(n);
+      lsSet(LS.bancos, bancos);
+      pintarBancos();
+    };
+    chip.appendChild(del);
+    chip.onclick = () => {
+      if(bancosSel.has(n)) bancosSel.delete(n); else bancosSel.add(n);
+      pintarBancos();
+    };
+    cont.appendChild(chip);
+  });
+  pintarTemas();
+  pintarOnline();
+}
+
 function pintarTemas(){
-  const temas = [...new Set(banco.map(q=>q.tema))];
+  const pool = preguntasSeleccionadas();
+  const temas = [...new Set(pool.map(q=>q.tema))];
   temasSel = new Set(temas);
   const cont = $('temas-list');
   cont.innerHTML = '';
@@ -389,8 +444,37 @@ function pintarTemas(){
     };
     cont.appendChild(chip);
   });
-  $('card-temas').style.display = 'block';
+  $('card-temas').style.display = temas.length > 1 ? 'block' : 'none';
+  $('btn-start').disabled = !pool.length;
 }
+
+/* ===== bancos online (carpeta bancos/ del repositorio) ===== */
+let bancosOnline = [];
+function pintarOnline(){
+  const pendientes = bancosOnline.filter(b => !bancos[b.nombre]);
+  $('card-online').style.display = pendientes.length ? 'block' : 'none';
+  const cont = $('online-list');
+  cont.innerHTML = '';
+  pendientes.forEach(b => {
+    const chip = document.createElement('div');
+    chip.className = 'tema-chip dl';
+    chip.textContent = `⬇ ${b.nombre} (${b.preguntas})`;
+    chip.onclick = async () => {
+      chip.textContent = 'descargando…';
+      try{
+        const r = await fetch('bancos/' + b.archivo);
+        cargarBanco(await r.json(), b.nombre);
+      }catch(e){
+        chip.textContent = `error al descargar ${b.nombre}`;
+      }
+    };
+    cont.appendChild(chip);
+  });
+}
+fetch('bancos/index.json').then(r => r.ok ? r.json() : []).then(idx => {
+  bancosOnline = idx;
+  pintarOnline();
+}).catch(()=>{});
 
 $('btn-file').onclick = () => $('file-input').click();
 $('file-input').onchange = e => {
@@ -398,7 +482,7 @@ $('file-input').onchange = e => {
   if(!f) return;
   const r = new FileReader();
   r.onload = () => {
-    try{ cargarBanco(JSON.parse(r.result), f.name); }
+    try{ cargarBanco(JSON.parse(r.result), f.name.replace(/\.json$/i,'')); }
     catch(err){ $('banco-msg').textContent = 'JSON inválido: ' + err.message; $('banco-msg').className = 'msg err'; }
   };
   r.readAsText(f);
@@ -410,7 +494,8 @@ $('btn-paste').onclick = () => {
 };
 $('btn-paste-ok').onclick = () => {
   try{
-    if(cargarBanco(JSON.parse($('paste-area').value), 'pegado')){
+    const nombre = (prompt('Nombre para este banco:') || 'Pegado ' + new Date().toLocaleDateString('es-ES')).trim();
+    if(cargarBanco(JSON.parse($('paste-area').value), nombre)){
       $('paste-area').value = ''; $('paste-zone').style.display = 'none';
     }
   }catch(err){ $('banco-msg').textContent = 'JSON inválido: ' + err.message; $('banco-msg').className = 'msg err'; }
@@ -435,8 +520,8 @@ const S = {
 };
 
 $('btn-start').onclick = async () => {
-  const pool = banco.filter(q => temasSel.has(q.tema));
-  if(!pool.length){ $('banco-msg').textContent = 'Selecciona al menos un tema.'; $('banco-msg').className = 'msg err'; return; }
+  const pool = preguntasSeleccionadas().filter(q => temasSel.has(q.tema));
+  if(!pool.length){ $('banco-msg').textContent = 'Selecciona al menos un banco y un tema.'; $('banco-msg').className = 'msg err'; return; }
   lsSet(LS.cfg, cfg);
   S.cola = shuffle(pool.slice()).slice(0, cfg.num);
   S.idx = 0; S.resultados = []; S.pausada = false; S.inicio = new Date();
@@ -770,14 +855,20 @@ function dibujarGrafica(hist){
 
 /* ================= ARRANQUE ================= */
 (function init(){
-  const saved = lsGet(LS.banco, null);
-  if(saved && !validarBanco(saved)){
-    banco = saved;
-    $('banco-msg').textContent = `${banco.length} preguntas recuperadas de la última vez.`;
-    $('banco-msg').className = 'msg ok';
-    pintarTemas();
-    $('btn-start').disabled = false;
+  // migrar el banco único de versiones anteriores
+  const viejo = lsGet(LS.banco, null);
+  if(viejo && !validarBanco(viejo) && !Object.keys(bancos).length){
+    bancos['Mi banco'] = viejo;
+    lsSet(LS.bancos, bancos);
+    try{ localStorage.removeItem(LS.banco); }catch(e){}
   }
+  bancosSel = new Set(Object.keys(bancos));   // todo seleccionado por defecto
+  if(Object.keys(bancos).length){
+    const total = preguntasSeleccionadas().length;
+    $('banco-msg').textContent = `${Object.keys(bancos).length} bancos guardados (${total} preguntas).`;
+    $('banco-msg').className = 'msg ok';
+  }
+  pintarBancos();
 })();
 </script>
 </body>
